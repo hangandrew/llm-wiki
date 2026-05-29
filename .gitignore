@@ -1,0 +1,17 @@
+.claude/
+
+# Regenerable / per-session state (not source-of-truth)
+.system/state/
+.system/config/session-exclusions.local.json
+
+# Python bytecode
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Python test/type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
