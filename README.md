@@ -16,6 +16,7 @@ A persistent, LLM-maintained knowledge base built from agent session transcripts
 - [`wiki/concepts/`](wiki/concepts/) — recurring patterns, design decisions, durable problems
 - [`wiki/syntheses/`](wiki/syntheses/) — cross-cutting analyses (open questions, decisions log, recurring bugs, lint reports)
 - [`wiki/index/`](wiki/index/) — auto-derived (by-project, by-date, glossary)
+- [`worklog/`](worklog/) — the **transient** layer: in-flight workstreams (status, next action, blockers) and their archive. Separate from the durable wiki; see [`worklog/WORKLOG.md`](worklog/WORKLOG.md)
 
 ## How it stays alive
 
@@ -35,3 +36,14 @@ Process-and-discard ingests can also update the wiki directly and are installed 
 Supported source counters in page frontmatter are `claude-transcripts`, `codex-sessions`, `slack-messages`, and `granola-notes`.
 
 The installer also makes the wiki discoverable to both interactive agents: it refreshes a marked block in `~/.claude/CLAUDE.md` for Claude Code and in `~/.codex/config.toml` `developer_instructions` for Codex.
+
+## The worklog (transient layer)
+
+The durable wiki deliberately omits in-flight state. The `worklog/` tree fills that gap: it tracks **active workstreams** — one file per PR / ticket / branch / investigation in `worklog/live/`, with a scannable `worklog/board.md` index — and moves them to `worklog/archive/` on completion. The wiki answers "what is true and durable"; the worklog answers "what am I working on right now and how do I resume it." Rules live in [`worklog/WORKLOG.md`](worklog/WORKLOG.md).
+
+It is maintained by the same machinery, in two ways:
+
+- **Synthesizer pass**: after folding durable signal into `wiki/`, the synthesizer runs a second pass over the same transcript tails to create/update/archive worklog items (see the "Worklog" section in `.system/prompts/wiki-synthesize-pending.md`).
+- **PR-state poller**: a launchd plist runs `.system/scripts/pr-state-sync.sh` every 10 minutes, polling your open/merged GitHub PRs via `gh`. It deterministically refreshes each tracked item's `## PR state` block with no LLM, and fires the headless agent **only** on a structural event — a new PR to enroll or a merged/closed PR to archive. Requires the `gh` CLI authenticated.
+
+A `SessionStart` hook (`.system/hooks/wiki-session-start.sh`) surfaces the project-filtered board into new sessions so in-flight work is recalled automatically.

@@ -53,7 +53,7 @@ ${EXISTING_CONCEPTS}
 - Refresh the `updated:` frontmatter field on changed pages.
 - Cap `Recent activity` sections at ~10 entries; trim oldest.
 - **Each `Recent activity` entry is one line, ≤200 characters.** No sub-bullets, no embedded newlines, no multi-sentence summaries. Link to exec plans, PRs, RCA docs, Notion pages instead of paraphrasing them. If a change is too rich for one line, the substance belongs in a concept page or `syntheses/decisions.md` — write that page and leave Recent activity with a one-line pointer to it.
-  - **Good**: `2026-05-12 — Strategic pivot to agentic-observability monorepo; see [exec plan](../../../path/pivot.md). Splits ECA into triage (L1a) + resolve (L1b) agents.`
+  - **Good**: `2026-05-12 — Strategic pivot to a consolidated monorepo; see [exec plan](../../../path/pivot.md). Splits the pipeline into triage (L1a) + resolve (L1b) stages.`
   - **Bad**: a 200-word paragraph summarizing the pivot doc inline.
 - Update `wiki/index/by-project.md` if you touched any project page.
 - Add **one** combined pointer line to `wiki/index/by-date.md` per project that genuinely changed in this batch. Format: `${DATE_STR} — <project-or-context> — <one-line summary of the change>`. **Hard cap: one line, ≤200 characters, no sub-bullets, no embedded newlines.** by-date is a thin pointer index, not a second synthesis — link to entity pages, exec plans, PRs, RCA docs instead of summarizing them. Skip the pointer entirely if the batch produced no durable update worth a timeline entry.
@@ -61,7 +61,7 @@ ${EXISTING_CONCEPTS}
 
 ## Renames
 
-If a session in this batch contains an **explicit, unambiguous rename signal** for an existing wiki entity (e.g. transcript states "rename `error-classification-agent` → `resolve-agent`", "the repo is being renamed to X", "split ECA into triage + resolve agents and rename the page accordingly"), apply the rename **before** folding content updates into the affected pages. Otherwise content edits land on a path that's about to move.
+If a session in this batch contains an **explicit, unambiguous rename signal** for an existing wiki entity (e.g. transcript states "rename `old-agent` → `new-agent`", "the repo is being renamed to X", "split the pipeline into triage + resolve components and rename the page accordingly"), apply the rename **before** folding content updates into the affected pages. Otherwise content edits land on a path that's about to move.
 
 How:
 
@@ -97,6 +97,20 @@ How:
 3. If the file doesn't exist, create it with frontmatter `type: synthesis`, `slug: refactor-intents`, `sources: synthesizer: 1` (increment on subsequent runs).
 
 This marker is the only thing that licenses an autonomous SPLIT or DEDUP. Refactor-review never acts on these categories without one — so recording the intent now is what makes the action possible later. Markers you leave at `medium`/`low` confidence will sit in the file until a later refactor-review pass clears them or someone resolves them by hand; that's expected.
+
+## Worklog (transient state — a separate pass, separate tree)
+
+After the wiki pass, run a **second, independent pass** over the same transcript tails to maintain the worklog at `${WORK_WIKI}/worklog/`. This is the ONE place transient/in-flight state is allowed; it never lives in `wiki/`. **Read `${WORK_WIKI}/worklog/WORKLOG.md` first** — it defines the live-item shape, the board format, and the archival rules.
+
+The worklog answers "what am I working on right now and what's the next step to resume it"; the wiki answers "what is true and durable." Keep them disjoint.
+
+- **Create a live item** (`worklog/live/<slug>.md`) when a tail shows active, **not-yet-complete** work on an identifiable workstream — a PR pushed, a ticket worked, a named branch, a focused investigation. Key it ticket → PR → branch → topic. Search `worklog/live/` and `worklog/archive/` by key/slug **before** creating; prefer updating an existing item.
+- **Update a live item** when a tail advances an existing workstream: **overwrite** Status and Next action with the current picture (not a diary), refresh `updated:`, add new Links, flip `status:` to `blocked`/`waiting` when the tail shows a blocker.
+- **Archive** with `git mv worklog/live/<slug>.md worklog/archive/<slug>.md` on an **explicit completion signal** in the tail — "merged", "shipped", "done", "closing this out", a PR merged/closed, an investigation concluded (same conservative bar as RENAME above). Set a terminal `status:` (`merged`/`closed`/`done`), record the one-line outcome, apply the **tomorrow test** (strip in-flight noise), and remove its board line.
+- **Keep `worklog/board.md` in sync** on every create / update / archive — one line per live item.
+- **Do not duplicate the wiki.** Link into wiki pages; never mirror durable facts. If something is durable it goes in the wiki pass above, not here.
+- **Leave the `## PR state` block alone** — it is owned by `pr-state-sync.sh`.
+- If the batch shows no active workstream and touches no existing live item, write nothing to the worklog. Don't manufacture entries.
 
 ## Important rules
 

@@ -1,4 +1,10 @@
-.claude/
+# Ignore everything under .claude/ (worktrees, local state) EXCEPT shipped skills
+.claude/*
+!.claude/skills/
+
+# Ignore everything under .codex/ (local state) EXCEPT shipped skills
+.codex/*
+!.codex/skills/
 
 # Regenerable / per-session state (not source-of-truth)
 .system/state/

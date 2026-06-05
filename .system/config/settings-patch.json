@@ -8,5 +8,15 @@
         }
       ]
     }
+  ],
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "~/.claude/hooks/wiki-session-start.sh"
+        }
+      ]
+    }
   ]
 }

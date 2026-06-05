@@ -20,7 +20,9 @@ Then read the actual pages that show up in those outputs (Read tool) before acti
 
 ## Categories and the high-confidence gate
 
-Six categories. Only auto-apply when the per-category criteria below are met **in full**. If any criterion is uncertain, **drop the finding** — do not act, do not write a proposal, do not log it. It will reappear next run if still relevant.
+Seven categories. Only auto-apply when the per-category criteria below are met **in full**. If any criterion is uncertain, **drop the finding** — do not act, do not write a proposal, do not log it. It will reappear next run if still relevant.
+
+The first six operate on `wiki/`. The seventh (STALE_WORKLOG) operates on the separate `worklog/` tree.
 
 ### RENAME (auto-applicable)
 Apply only when:
@@ -98,6 +100,22 @@ Hard cap: **1 DEDUP per run**. Counts toward the 5-action total.
 
 **For both:** if any criterion fails, **leave the marker in `refactor-intents.md`** — don't act, don't delete the entry. The marker persists until either a later run's gate passes or a human resolves it. Markers that survive ~30 runs (the pass runs daily) are a signal the intent was insufficient; consider hand-resolving.
 
+### STALE_WORKLOG (auto-applicable — operates on `worklog/`, not `wiki/`)
+The worklog (`${WORK_WIKI}/worklog/`) tracks in-flight workstreams; see `${WORK_WIKI}/worklog/WORKLOG.md`. Live items that go idle without a completion signal should be flagged so the board reflects reality — but **not** archived, since idleness is ambiguous (a workstream may be parked, not done).
+
+Gather: `Glob worklog/live/*.md`, read each item's `updated:` frontmatter.
+
+Apply only when:
+- The item lives in `worklog/live/` (not `archive/`).
+- Its `updated:` date is **more than 14 days** before today (${DATE_STR}).
+- Its `status:` is not already `stale`.
+
+Action (purely mechanical, per qualifying item):
+1. Set `status: stale` in the item's frontmatter (leave `updated:` unchanged — staleness is about inactivity, don't reset the clock).
+2. Update its line in `worklog/board.md` to `[stale]`.
+
+Do **not** archive, rewrite Status, or delete stale items — only mark. This category is mechanical and does **not** count toward the 5-action `wiki/` cap; apply it to all qualifying items.
+
 ## Execution
 
 1. Read SCHEMA.md, run the detector commands, list flagged pages, read them. Read `refactor-intents.md` if it exists.
@@ -118,4 +136,4 @@ That is the entire output. **Do not write a proposals file. Do not write a log f
 - **No upstream code repo reads.** Wiki refactors only.
 - **No stylistic changes.** No "rename for clarity," no "this should be a concept not a project."
 - **No fabricated evidence.** Every action must cite specific prose.
-- Your write targets are only the auto-apply edits described above. Never modify any page outside `wiki/`.
+- Your write targets are only the auto-apply edits described above: `wiki/` for the first six categories, and `worklog/live/*.md` + `worklog/board.md` for STALE_WORKLOG only. Never modify anything in `${WORK_WIKI}/.system/` or elsewhere.

@@ -22,6 +22,7 @@ SLACK_DAILY_CHOICE="1"     # "1" = install plist, "0" = skip
 GRANOLA_DAILY_CHOICE="1"   # "1" = install plist, "0" = skip
 REFACTOR_DAILY_CHOICE="1"  # "1" = install plist, "0" = skip
 CODEX_INGEST_CHOICE="1"    # "1" = install plist, "0" = skip
+PR_SYNC_CHOICE="1"         # "1" = install plist, "0" = skip
 EXPECT_SYNTH_PROVIDER=0
 for arg in "$@"; do
   if [[ "${EXPECT_SYNTH_PROVIDER}" -eq 1 ]]; then
@@ -47,6 +48,8 @@ for arg in "$@"; do
     --no-enable-refactor-daily|--no-enable-refactor-weekly) REFACTOR_DAILY_CHOICE=0 ;;
     --enable-codex-ingest) CODEX_INGEST_CHOICE=1 ;;
     --no-enable-codex-ingest) CODEX_INGEST_CHOICE=0 ;;
+    --enable-pr-sync) PR_SYNC_CHOICE=1 ;;
+    --no-enable-pr-sync) PR_SYNC_CHOICE=0 ;;
     -h|--help)
       cat <<'EOF'
 Usage: install.sh [-y|--yes] [--auto-push|--no-auto-push]
@@ -71,6 +74,8 @@ Usage: install.sh [-y|--yes] [--auto-push|--no-auto-push]
                                   (legacy --enable-refactor-weekly is still accepted)
       --enable-codex-ingest       Install the every-15-minutes Codex ingest launchd plist (default)
       --no-enable-codex-ingest    Skip installing the Codex ingest launchd plist
+      --enable-pr-sync            Install the every-10-minutes PR-state poller launchd plist (default)
+      --no-enable-pr-sync         Skip installing the PR-state poller launchd plist
   -h, --help                      Show this help
 EOF
       exit 0
@@ -88,6 +93,51 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_WIKI="$(dirname "${SCRIPT_DIR}")"
+
+# --- Guard: confirm the install target when run from a linked git worktree ---
+# WORK_WIKI is resolved from this script's OWN location (above), so running
+# .system/install.sh from inside a worktree silently bakes the worktree path
+# into every launchd plist, hook, and context block. That path vanishes when
+# the worktree is removed, leaving the automation pointed at a dead directory.
+# A linked worktree has a `.git` FILE (gitdir pointer); the main checkout has a
+# `.git` DIRECTORY. Stop and confirm this is really the checkout to update.
+confirm_install_target() {
+  [[ -f "${WORK_WIKI}/.git" ]] || return 0   # main checkout (or non-git) — nothing to warn about
+
+  local main_wt
+  main_wt="$(git -C "${WORK_WIKI}" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+
+  {
+    echo ""
+    echo "⚠️  install.sh is running from a LINKED GIT WORKTREE, not the main checkout:"
+    echo "      target (this script): ${WORK_WIKI}"
+    [[ -n "${main_wt}" ]] && echo "      main checkout:        ${main_wt}"
+    echo ""
+    echo "All launchd jobs, hooks, and agent-context blocks will be wired to the"
+    echo "target path above. If that worktree is later removed, the automation"
+    echo "breaks. You almost always want to install from the main checkout instead."
+    echo ""
+  } >&2
+
+  if [[ "${ASSUME_YES}" -eq 1 || "${WORK_WIKI_ALLOW_WORKTREE:-0}" == "1" ]]; then
+    echo "Proceeding anyway (--yes / WORK_WIKI_ALLOW_WORKTREE=1)." >&2
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    echo "Refusing to install non-interactively from a worktree." >&2
+    echo "Re-run from ${main_wt:-the main checkout}, or pass --yes / set WORK_WIKI_ALLOW_WORKTREE=1 to override." >&2
+    exit 2
+  fi
+
+  local ans
+  read -r -p "Install updates to THIS path anyway? [y/N]: " ans
+  case "${ans}" in
+    y|Y|yes|YES) echo "Proceeding with ${WORK_WIKI}." >&2 ;;
+    *) echo "Aborted. Re-run install.sh from the checkout you want updated." >&2; exit 0 ;;
+  esac
+}
+confirm_install_target
+
 HOOKS_DIR="${HOME}/.claude/hooks"
 SETTINGS="${HOME}/.claude/settings.json"
 LOG_DIR="${HOME}/.claude/logs"
@@ -159,6 +209,9 @@ preflight() {
     command -v sqlite3 >/dev/null 2>&1 || missing+=("sqlite3")
     needs_codex_cli=1
   fi
+  if [[ "${PR_SYNC_CHOICE}" == "1" ]]; then
+    command -v gh >/dev/null 2>&1 || missing+=("gh")
+  fi
   if [[ "${needs_codex_cli}" -eq 1 ]]; then
     command -v codex   >/dev/null 2>&1 || missing+=("codex")
   fi
@@ -181,6 +234,13 @@ preflight() {
           ;;
         codex)
           echo "  codex: install the Codex CLI and run it once so ~/.codex/state_5.sqlite exists" >&2
+          ;;
+        gh)
+          if [[ "${platform}" == "Darwin" ]]; then
+            echo "  gh: brew install gh   then 'gh auth login' (needed for PR-state polling)" >&2
+          else
+            echo "  gh: install GitHub CLI — https://cli.github.com   then 'gh auth login'" >&2
+          fi
           ;;
       esac
     done
@@ -254,6 +314,8 @@ OLD_MARKER="<!-- work-tracker -->"
 
 HOOK_END_SRC="${SCRIPT_DIR}/hooks/wiki-session-end.sh"
 HOOK_END_DST="${HOOKS_DIR}/wiki-session-end.sh"
+HOOK_START_SRC="${SCRIPT_DIR}/hooks/wiki-session-start.sh"
+HOOK_START_DST="${HOOKS_DIR}/wiki-session-start.sh"
 HOOK_SYNTH_SRC="${SCRIPT_DIR}/hooks/wiki-synthesizer.sh"
 HEADLESS_RUNNER_SRC="${SCRIPT_DIR}/scripts/headless-agent-run.sh"
 SLACK_PREFETCH_SRC="${SCRIPT_DIR}/scripts/slack-prefetch.py"
@@ -277,6 +339,10 @@ GRANOLA_EXTRACT_SRC="${SCRIPT_DIR}/scripts/granola-extract.py"
 LAUNCHD_CODEX_TEMPLATE="${SCRIPT_DIR}/config/com.work-wiki.codex-ingest.plist.template"
 LAUNCHD_CODEX_DST="${HOME}/Library/LaunchAgents/com.work-wiki.codex-ingest.plist"
 CODEX_INGEST_SRC="${SCRIPT_DIR}/scripts/codex-ingest.sh"
+
+LAUNCHD_PR_SYNC_TEMPLATE="${SCRIPT_DIR}/config/com.work-wiki.pr-sync.plist.template"
+LAUNCHD_PR_SYNC_DST="${HOME}/Library/LaunchAgents/com.work-wiki.pr-sync.plist"
+PR_SYNC_SRC="${SCRIPT_DIR}/scripts/pr-state-sync.sh"
 
 LAUNCHD_REFACTOR_TEMPLATE="${SCRIPT_DIR}/config/com.work-wiki.refactor-daily.plist.template"
 LAUNCHD_REFACTOR_DST="${HOME}/Library/LaunchAgents/com.work-wiki.refactor-daily.plist"
@@ -424,6 +490,27 @@ codex_ingest_status() {
   esac
 }
 
+pr_sync_status() {
+  if [[ "${PR_SYNC_CHOICE}" == "0" ]]; then
+    echo "skipped (--no-enable-pr-sync)"
+    return
+  fi
+  if [[ -f "${LAUNCHD_PR_SYNC_DST}" ]]; then
+    echo "${LAUNCHD_PR_SYNC_DST} already exists — will refresh"
+    return
+  fi
+  case "${PR_SYNC_CHOICE}" in
+    1) echo "will render plist → ${LAUNCHD_PR_SYNC_DST}" ;;
+    *)
+      if [[ "${ASSUME_YES}" -eq 1 ]]; then
+        echo "will render plist → ${LAUNCHD_PR_SYNC_DST} (default)"
+      else
+        echo "will be asked"
+      fi
+      ;;
+  esac
+}
+
 settings_status() {
   if [[ ! -f "${SETTINGS}" ]]; then
     echo "will create new file with SessionEnd hook"
@@ -520,6 +607,11 @@ Triage hook symlink:
     → ${HOOK_END_SRC}
     [$(link_status "${HOOK_END_DST}" "${HOOK_END_SRC}")]
 
+Recall hook symlink (SessionStart — surfaces worklog board):
+  ${HOOK_START_DST}
+    → ${HOOK_START_SRC}
+    [$(link_status "${HOOK_START_DST}" "${HOOK_START_SRC}")]
+
 Legacy cleanup:
   $(legacy_hook_status)
 
@@ -555,6 +647,10 @@ Refactor daily review (launchd plist daily 8:30pm, default):
 Codex ingest (launchd plist every 15 minutes, default):
   ${LAUNCHD_CODEX_DST}
   [$(codex_ingest_status)]
+
+PR-state poller (launchd plist every 10 minutes, default):
+  ${LAUNCHD_PR_SYNC_DST}
+  [$(pr_sync_status)]
 
 EOF
 
@@ -637,6 +733,20 @@ if [[ "${ASSUME_YES}" -ne 1 ]]; then
     esac
   fi
 
+  if [[ -z "${PR_SYNC_CHOICE}" && ! -f "${LAUNCHD_PR_SYNC_DST}" ]]; then
+    echo ""
+    echo "PR-state poller: a launchd plist that runs pr-state-sync.sh every 10"
+    echo "minutes. It polls your open/merged GitHub PRs (gh), deterministically"
+    echo "refreshes the '## PR state' block on tracked worklog items (no LLM), and"
+    echo "fires the headless agent ONLY when a new PR appears or a tracked PR"
+    echo "merges/closes. Requires the gh CLI authenticated (gh auth login)."
+    read -r -p "Render PR-sync plist into ${LAUNCHD_PR_SYNC_DST}? [y/N] " ans
+    case "${ans}" in
+      [Yy]|[Yy][Ee][Ss]) PR_SYNC_CHOICE=1 ;;
+      *)                 PR_SYNC_CHOICE=0 ;;
+    esac
+  fi
+
   if [[ -z "${GRANOLA_DAILY_CHOICE}" && ! -f "${LAUNCHD_GRANOLA_DST}" ]]; then
     echo ""
     echo "Granola daily ingest: a launchd plist that runs granola-ingest.sh"
@@ -659,10 +769,15 @@ echo "Installing..."
 mkdir -p "${HOOKS_DIR}" "${LOG_DIR}"
 
 chmod +x "${HOOK_END_SRC}" "${HOOK_SYNTH_SRC}"
+[[ -f "${HOOK_START_SRC}" ]] && chmod +x "${HOOK_START_SRC}"
 [[ -f "${CODEX_INGEST_SRC}" ]] && chmod +x "${CODEX_INGEST_SRC}" "${SCRIPT_DIR}/scripts/codex-extract.py"
 [[ -f "${GRANOLA_INGEST_SRC}" ]] && chmod +x "${GRANOLA_INGEST_SRC}" "${GRANOLA_EXTRACT_SRC}"
 ln -sf "${HOOK_END_SRC}" "${HOOK_END_DST}"
 echo "✓ Symlinked $(basename "${HOOK_END_DST}")"
+if [[ -f "${HOOK_START_SRC}" ]]; then
+  ln -sf "${HOOK_START_SRC}" "${HOOK_START_DST}"
+  echo "✓ Symlinked $(basename "${HOOK_START_DST}")"
+fi
 
 # Remove legacy hook symlink
 if [[ -L "${LEGACY_HOOK_DST}" || -e "${LEGACY_HOOK_DST}" ]]; then
@@ -703,6 +818,20 @@ elif ! jq -e '.hooks.SessionEnd[]?.hooks[]? | select(.command? | tostring | test
 else
   rm -f "${TMP}"
   echo "✓ SessionEnd hook already present in ${SETTINGS} — skipped"
+fi
+
+# Install SessionStart recall hook entry (idempotent; skip if already present)
+TMP="$(mktemp)"
+if jq -e '.hooks.SessionStart[]?.hooks[]? | select(.command? | tostring | test("wiki-session-start\\.sh"))' "${SETTINGS}" > /dev/null 2>&1; then
+  rm -f "${TMP}"
+  echo "✓ SessionStart hook already present in ${SETTINGS} — skipped"
+else
+  jq --slurpfile patch "${PATCH_FILE}" '
+    .hooks = (.hooks // {})
+    | .hooks.SessionStart = ((.hooks.SessionStart // []) + $patch[0].SessionStart)
+  ' "${SETTINGS}" > "${TMP}"
+  mv "${TMP}" "${SETTINGS}"
+  echo "✓ Added SessionStart hook to ${SETTINGS}"
 fi
 
 # Migrate / install CLAUDE.md block
@@ -935,6 +1064,40 @@ PYEOF
   fi
 fi
 
+# Render PR-state poller launchd plist if opted in
+if [[ "${PR_SYNC_CHOICE}" == "1" ]]; then
+  if [[ ! -f "${LAUNCHD_PR_SYNC_TEMPLATE}" ]]; then
+    echo "WARN: launchd template not found at ${LAUNCHD_PR_SYNC_TEMPLATE} — skipping PR-sync plist"
+  elif [[ ! -f "${PR_SYNC_SRC}" ]]; then
+    echo "WARN: pr-state-sync.sh not found at ${PR_SYNC_SRC} — skipping PR-sync plist"
+  elif ! command -v gh >/dev/null 2>&1; then
+    echo "WARN: gh CLI must be on PATH to enable PR-state polling — skipping PR-sync plist"
+  else
+    chmod +x "${PR_SYNC_SRC}" "${HEADLESS_RUNNER_SRC}"
+    mkdir -p "$(dirname "${LAUNCHD_PR_SYNC_DST}")"
+    LAUNCHD_TEMPLATE_PATH="${LAUNCHD_PR_SYNC_TEMPLATE}" \
+    LAUNCHD_DST_PATH="${LAUNCHD_PR_SYNC_DST}" \
+    HOME_VAL="${HOME}" \
+    WORK_WIKI_VAL="${WORK_WIKI}" \
+    SYNTH_PROVIDER_VAL="${SYNTH_PROVIDER}" \
+    python3 <<'PYEOF'
+import os
+src = os.environ["LAUNCHD_TEMPLATE_PATH"]
+dst = os.environ["LAUNCHD_DST_PATH"]
+with open(src) as f:
+    txt = f.read()
+txt = txt.replace("__HOME__", os.environ["HOME_VAL"])
+txt = txt.replace("__WORK_WIKI__", os.environ["WORK_WIKI_VAL"])
+txt = txt.replace("__SYNTH_PROVIDER__", os.environ["SYNTH_PROVIDER_VAL"])
+with open(dst, "w") as f:
+    f.write(txt)
+PYEOF
+    echo "✓ Rendered PR-sync plist → ${LAUNCHD_PR_SYNC_DST}"
+    PR_SYNC_INSTALLED=1
+    launchctl_reload "com.work-wiki.pr-sync" "${LAUNCHD_PR_SYNC_DST}" && PR_SYNC_LOADED=1 || PR_SYNC_LOADED=0
+  fi
+fi
+
 # Migrate legacy refactor-weekly plist (predecessor of refactor-daily) if present
 if [[ -f "${LEGACY_REFACTOR_DST}" ]]; then
   launchctl unload "${LEGACY_REFACTOR_DST}" 2>/dev/null || true
@@ -1029,6 +1192,20 @@ if [[ "${CODEX_INGEST_INSTALLED:-0}" == "1" ]]; then
   echo "  launchctl unload -w ${LAUNCHD_CODEX_DST}"
   echo "Log:"
   echo "  ${LOG_DIR}/wiki-codex-ingest.log"
+fi
+if [[ "${PR_SYNC_INSTALLED:-0}" == "1" ]]; then
+  echo ""
+  if [[ "${PR_SYNC_LOADED:-0}" == "1" ]]; then
+    echo "PR-sync plist installed and loaded — polls every 10 minutes."
+  else
+    echo "PR-sync plist installed but NOT loaded. To enable it, run:"
+    echo "  launchctl load -w ${LAUNCHD_PR_SYNC_DST}"
+  fi
+  echo "To unload later:"
+  echo "  launchctl unload -w ${LAUNCHD_PR_SYNC_DST}"
+  echo "Note: requires the gh CLI authenticated (gh auth login)."
+  echo "Log:"
+  echo "  ${LOG_DIR}/wiki-pr-sync.log"
 fi
 if [[ "${REFACTOR_DAILY_INSTALLED:-0}" == "1" ]]; then
   echo ""
