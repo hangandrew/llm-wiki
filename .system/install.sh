@@ -23,21 +23,34 @@ GRANOLA_DAILY_CHOICE="1"   # "1" = install plist, "0" = skip
 REFACTOR_DAILY_CHOICE="1"  # "1" = install plist, "0" = skip
 CODEX_INGEST_CHOICE="1"    # "1" = install plist, "0" = skip
 PR_SYNC_CHOICE="1"         # "1" = install plist, "0" = skip
-EXPECT_SYNTH_PROVIDER=0
+# Secrets: seeded from the environment, optionally overridden by flags, and
+# persisted to the secrets file (never echoed). Empty = leave any existing
+# value in the secrets file untouched.
+SLACK_TOKEN_INPUT="${WORK_WIKI_SLACK_TOKEN:-}"
+GRANOLA_KEY_INPUT="${WORK_WIKI_GRANOLA_API_KEY:-}"
+PENDING_OPT=""
 for arg in "$@"; do
-  if [[ "${EXPECT_SYNTH_PROVIDER}" -eq 1 ]]; then
-    SYNTH_PROVIDER_CHOICE="${arg}"
-    EXPECT_SYNTH_PROVIDER=0
+  if [[ -n "${PENDING_OPT}" ]]; then
+    case "${PENDING_OPT}" in
+      synth-provider) SYNTH_PROVIDER_CHOICE="${arg}" ;;
+      slack-token)    SLACK_TOKEN_INPUT="${arg}" ;;
+      granola-key)    GRANOLA_KEY_INPUT="${arg}" ;;
+    esac
+    PENDING_OPT=""
     continue
   fi
   case "${arg}" in
     -y|--yes) ASSUME_YES=1 ;;
     --auto-push) AUTO_PUSH_CHOICE=1 ;;
     --no-auto-push) AUTO_PUSH_CHOICE=0 ;;
-    --synth-provider) EXPECT_SYNTH_PROVIDER=1 ;;
+    --synth-provider) PENDING_OPT="synth-provider" ;;
     --synth-provider=*)
       SYNTH_PROVIDER_CHOICE="${arg#*=}"
       ;;
+    --slack-token) PENDING_OPT="slack-token" ;;
+    --slack-token=*) SLACK_TOKEN_INPUT="${arg#*=}" ;;
+    --granola-key) PENDING_OPT="granola-key" ;;
+    --granola-key=*) GRANOLA_KEY_INPUT="${arg#*=}" ;;
     --enable-daily) DAILY_CHOICE=1 ;;
     --no-enable-daily) DAILY_CHOICE=0 ;;
     --enable-slack-daily) SLACK_DAILY_CHOICE=1 ;;
@@ -63,6 +76,11 @@ Usage: install.sh [-y|--yes] [--auto-push|--no-auto-push]
       --auto-push                 Set WORK_WIKI_AUTO_PUSH=1 in ~/.claude/settings.json env block
       --no-auto-push              Skip the auto-push prompt and leave settings.json env alone
       --synth-provider PROVIDER   Set WORK_WIKI_SYNTH_PROVIDER to claude or codex
+      --slack-token TOKEN         Validate (Slack auth.test) and persist WORK_WIKI_SLACK_TOKEN
+                                  to the secrets file (also read from the env var of the same name)
+      --granola-key KEY           Validate (Granola API) and persist WORK_WIKI_GRANOLA_API_KEY
+                                  to the secrets file (also read from the env var of the same name)
+                                  Set WORK_WIKI_SKIP_TOKEN_CHECK=1 to store without validating.
       --enable-daily              Install the daily 8pm synthesizer launchd plist (default)
       --no-enable-daily           Skip installing the synthesizer daily plist
       --enable-slack-daily        Install the daily 8pm Slack-ingest launchd plist (default)
@@ -86,8 +104,8 @@ EOF
       ;;
   esac
 done
-if [[ "${EXPECT_SYNTH_PROVIDER}" -eq 1 ]]; then
-  echo "ERROR: --synth-provider requires claude or codex" >&2
+if [[ -n "${PENDING_OPT}" ]]; then
+  echo "ERROR: --${PENDING_OPT} requires a value" >&2
   exit 2
 fi
 
@@ -143,6 +161,142 @@ SETTINGS="${HOME}/.claude/settings.json"
 LOG_DIR="${HOME}/.claude/logs"
 CLAUDE_MD="${HOME}/.claude/CLAUDE.md"
 CODEX_CONFIG="${HOME}/.codex/config.toml"
+
+# Secrets file: a single 0600 env file the ingest scripts source at runtime.
+# Decoupled from launchd plists so a re-run (which re-renders plists) never
+# wipes credentials, and from settings.json so secrets aren't loaded into every
+# interactive Claude session. Override the location with WORK_WIKI_SECRETS_FILE.
+SECRETS_FILE="${WORK_WIKI_SECRETS_FILE:-${HOME}/.config/work-wiki/secrets.env}"
+
+# Upsert KEY=VALUE into the secrets file, creating it 0600 if absent. A blank
+# VALUE is a no-op, so an unset token never clobbers a previously stored one.
+# Never prints the value.
+secrets_set() {
+  local key="$1" value="$2"
+  [[ -z "${value}" ]] && return 0
+  mkdir -p "$(dirname "${SECRETS_FILE}")"
+  if [[ ! -f "${SECRETS_FILE}" ]]; then
+    : > "${SECRETS_FILE}"
+  fi
+  chmod 600 "${SECRETS_FILE}"
+  local tmp
+  tmp="$(mktemp "${SECRETS_FILE}.XXXXXX")"
+  chmod 600 "${tmp}"
+  KEY="${key}" VALUE="${value}" SRC="${SECRETS_FILE}" python3 <<'PYEOF' > "${tmp}"
+import os
+key, value, src = os.environ["KEY"], os.environ["VALUE"], os.environ["SRC"]
+lines, replaced = [], False
+try:
+    with open(src) as f:
+        for line in f:
+            stripped = line.lstrip()
+            name = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+            if name == key or (stripped.startswith("export ") and name == f"export {key}".split()[-1]):
+                if not replaced:
+                    lines.append(f"{key}={value}\n")
+                    replaced = True
+                continue
+            lines.append(line if line.endswith("\n") else line + "\n")
+except FileNotFoundError:
+    pass
+if not replaced:
+    lines.append(f"{key}={value}\n")
+print("".join(lines), end="")
+PYEOF
+  mv "${tmp}" "${SECRETS_FILE}"
+}
+
+# Does the secrets file already define KEY (non-empty)?
+secrets_has() {
+  local key="$1"
+  [[ -f "${SECRETS_FILE}" ]] || return 1
+  KEY="${key}" SRC="${SECRETS_FILE}" python3 <<'PYEOF'
+import os, sys
+key, src = os.environ["KEY"], os.environ["SRC"]
+with open(src) as f:
+    for line in f:
+        s = line.strip()
+        if s.startswith("export "):
+            s = s[len("export "):]
+        if "=" in s and s.split("=", 1)[0].strip() == key and s.split("=", 1)[1].strip():
+            sys.exit(0)
+sys.exit(1)
+PYEOF
+}
+
+# Credential validators. Each sets VALIDATION_DETAIL for messaging and returns:
+#   0 = valid   1 = definitively rejected (bad/revoked/expired)   2 = could not verify
+VALIDATION_DETAIL=""
+
+validate_slack_token() {
+  VALIDATION_DETAIL=""
+  local resp
+  resp="$(curl -s --max-time 15 -X POST https://slack.com/api/auth.test \
+            -H "Authorization: Bearer $1" 2>/dev/null)" || { VALIDATION_DETAIL="curl failed"; return 2; }
+  [[ -z "${resp}" ]] && { VALIDATION_DETAIL="empty response"; return 2; }
+  local ok err
+  ok="$(printf '%s' "${resp}" | jq -r '.ok // false' 2>/dev/null)"
+  if [[ "${ok}" == "true" ]]; then
+    VALIDATION_DETAIL="$(printf '%s' "${resp}" | jq -r '"user=\(.user // "?") team=\(.team // "?")"' 2>/dev/null)"
+    return 0
+  fi
+  err="$(printf '%s' "${resp}" | jq -r '.error // "unknown"' 2>/dev/null)"
+  VALIDATION_DETAIL="${err}"
+  # Transient conditions can't disprove the token; everything else from
+  # auth.test (invalid_auth, token_revoked, account_inactive, …) is definitive.
+  case "${err}" in
+    ratelimited|unknown|"") return 2 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_granola_key() {
+  VALIDATION_DETAIL=""
+  local status
+  status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+             "https://public-api.granola.ai/v1/notes?limit=1" \
+             -H "Authorization: Bearer $1" -H "Accept: application/json" 2>/dev/null)" \
+    || { VALIDATION_DETAIL="curl failed"; return 2; }
+  VALIDATION_DETAIL="HTTP ${status}"
+  case "${status}" in
+    2??)     return 0 ;;
+    401|403) return 1 ;;
+    000)     VALIDATION_DETAIL="no response (network?)"; return 2 ;;
+    *)       return 2 ;;   # 400/429/5xx — auth not disproven, can't confirm either
+  esac
+}
+
+# Validate a credential, then store it unless it was definitively rejected.
+# Args: KEY VALUE HUMAN_LABEL VALIDATOR_FN. A blank VALUE is a no-op. Validation
+# is skipped (with a notice) when curl is absent or WORK_WIKI_SKIP_TOKEN_CHECK=1.
+maybe_store_secret() {
+  local key="$1" value="$2" label="$3" validator="$4"
+  [[ -z "${value}" ]] && return 0
+  if [[ "${WORK_WIKI_SKIP_TOKEN_CHECK:-0}" == "1" ]]; then
+    echo "• Skipping ${label} validation (WORK_WIKI_SKIP_TOKEN_CHECK=1)"
+  elif ! command -v curl >/dev/null 2>&1; then
+    echo "• Cannot validate ${label} (curl not found) — storing unverified"
+  else
+    local rc=0
+    "${validator}" "${value}" || rc=$?
+    case "${rc}" in
+      0) echo "✓ ${label} validated (${VALIDATION_DETAIL})" ;;
+      1)
+        echo "✗ ${label} was REJECTED by the API: ${VALIDATION_DETAIL}" >&2
+        if [[ "${ASSUME_YES}" -eq 1 || ! -t 0 ]]; then
+          echo "  Not storing it — the job stays dormant. Re-run with a valid value." >&2
+          return 0
+        fi
+        local ans
+        read -r -p "  Store it anyway? [y/N] " ans
+        case "${ans}" in [Yy]|[Yy][Ee][Ss]) ;; *) echo "  Skipped — job stays dormant." >&2; return 0 ;; esac
+        ;;
+      *) echo "⚠ Could not verify ${label} (${VALIDATION_DETAIL}) — storing unverified" >&2 ;;
+    esac
+  fi
+  secrets_set "${key}" "${value}"
+  echo "✓ Stored ${key} → ${SECRETS_FILE}"
+}
 
 normalize_provider() {
   local provider
@@ -378,6 +532,26 @@ legacy_hook_status() {
     echo "no legacy artifacts (clean)"
   else
     echo "will remove: ${found[*]}"
+  fi
+}
+
+secrets_status() {
+  local parts=()
+  if [[ -n "${SLACK_TOKEN_INPUT}" ]]; then
+    parts+=("WORK_WIKI_SLACK_TOKEN → will set")
+  elif secrets_has WORK_WIKI_SLACK_TOKEN; then
+    parts+=("WORK_WIKI_SLACK_TOKEN → already set, preserved")
+  fi
+  if [[ -n "${GRANOLA_KEY_INPUT}" ]]; then
+    parts+=("WORK_WIKI_GRANOLA_API_KEY → will set")
+  elif secrets_has WORK_WIKI_GRANOLA_API_KEY; then
+    parts+=("WORK_WIKI_GRANOLA_API_KEY → already set, preserved")
+  fi
+  if [[ "${#parts[@]}" -eq 0 ]]; then
+    echo "no tokens provided or stored — Slack/Granola jobs stay dormant"
+  else
+    local IFS='; '
+    echo "${parts[*]}"
   fi
 }
 
@@ -628,6 +802,10 @@ Headless synthesis provider:
   WORK_WIKI_SYNTH_PROVIDER=${SYNTH_PROVIDER}
   [$(synth_provider_status)]
 
+Secrets file (sourced by Slack/Granola ingest at runtime, chmod 600):
+  ${SECRETS_FILE}
+  [$(secrets_status)]
+
 Daily floor (launchd plist at 8pm, default):
   ${LAUNCHD_DST}
   [$(daily_status)]
@@ -760,6 +938,26 @@ if [[ "${ASSUME_YES}" -ne 1 ]]; then
       *)                 GRANOLA_DAILY_CHOICE=0 ;;
     esac
   fi
+
+  # Prompt for credentials only when the integration is on and no token is
+  # already available (neither passed in nor stored). Input is read silently;
+  # blank leaves the job dormant. Stored once in the 0600 secrets file.
+  if [[ "${SLACK_DAILY_CHOICE}" == "1" && -z "${SLACK_TOKEN_INPUT}" ]] && ! secrets_has WORK_WIKI_SLACK_TOKEN; then
+    echo ""
+    echo "Slack token (WORK_WIKI_SLACK_TOKEN): a user OAuth token (xoxp-…) able to call"
+    echo "auth.test, search.messages, and conversations.replies. Stored in"
+    echo "${SECRETS_FILE} (chmod 600). Leave blank to skip — the job stays dormant."
+    read -r -s -p "Slack token [skip]: " ans; echo
+    SLACK_TOKEN_INPUT="${ans}"
+  fi
+
+  if [[ "${GRANOLA_DAILY_CHOICE}" == "1" && -z "${GRANOLA_KEY_INPUT}" ]] && ! secrets_has WORK_WIKI_GRANOLA_API_KEY; then
+    echo ""
+    echo "Granola key (WORK_WIKI_GRANOLA_API_KEY): a Granola Personal API key. Stored in"
+    echo "${SECRETS_FILE} (chmod 600). Leave blank to skip — the job stays dormant."
+    read -r -s -p "Granola key [skip]: " ans; echo
+    GRANOLA_KEY_INPUT="${ans}"
+  fi
 fi
 
 # --- Execute ---
@@ -767,6 +965,13 @@ echo ""
 echo "Installing..."
 
 mkdir -p "${HOOKS_DIR}" "${LOG_DIR}"
+
+# Persist any provided credentials to the secrets file (0600), validating each
+# against its API first. Blank inputs are no-ops, so a re-run without tokens
+# preserves whatever is already stored; a definitively rejected token is not
+# stored (the job stays dormant) so a typo'd/revoked key fails here, not at 8pm.
+maybe_store_secret WORK_WIKI_SLACK_TOKEN "${SLACK_TOKEN_INPUT}" "Slack token" validate_slack_token
+maybe_store_secret WORK_WIKI_GRANOLA_API_KEY "${GRANOLA_KEY_INPUT}" "Granola key" validate_granola_key
 
 chmod +x "${HOOK_END_SRC}" "${HOOK_SYNTH_SRC}"
 [[ -f "${HOOK_START_SRC}" ]] && chmod +x "${HOOK_START_SRC}"

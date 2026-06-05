@@ -85,13 +85,47 @@ launchctl load -w ~/Library/LaunchAgents/com.work-wiki.refactor-daily.plist
 launchctl load -w ~/Library/LaunchAgents/com.work-wiki.codex-ingest.plist
 ```
 
-The Slack-daily plist requires `WORK_WIKI_SLACK_TOKEN` to be available to the job. The token must be able to call Slack Web API `auth.test`, `search.messages`, and `conversations.replies`, with access to the public/private channel history you expect to ingest.
+### Credentials: the secrets file
 
-The Granola-daily plist requires `WORK_WIKI_GRANOLA_API_KEY` to be available to the job. The safest path is to set it in the environment that launches the job or run the ingest manually:
+The Slack and Granola ingest jobs need credentials that launchd jobs **cannot**
+inherit from your interactive shell. The installer stores them once in a single
+`0600` env file — `~/.config/work-wiki/secrets.env` (override the path with
+`WORK_WIKI_SECRETS_FILE`) — and `slack-ingest.sh` / `granola-ingest.sh` source it
+at runtime. This is decoupled from the launchd plists (so a re-run, which
+re-renders the plists, never wipes your tokens) and from `settings.json` (so the
+secrets aren't loaded into every interactive Claude session).
+
+```
+# ~/.config/work-wiki/secrets.env   (chmod 600)
+WORK_WIKI_SLACK_TOKEN=xoxp-…
+WORK_WIKI_GRANOLA_API_KEY=grn_…
+```
+
+The installer writes this file when you pass the tokens — via `--slack-token` /
+`--granola-key`, via the `WORK_WIKI_SLACK_TOKEN` / `WORK_WIKI_GRANOLA_API_KEY`
+environment variables, or via the interactive prompt. Each token is **validated
+against its API before being stored** (Slack `auth.test`, a 1-item Granola notes
+fetch): a token the API definitively rejects is reported and *not* stored, so a
+typo'd or revoked key fails at install time instead of silently at 8pm. A
+transient failure (network down, rate-limit) stores the token with a warning
+rather than blocking. Set `WORK_WIKI_SKIP_TOKEN_CHECK=1` to skip validation
+entirely (offline installs). A re-run with no token supplied **preserves**
+whatever is already stored; it never clobbers a key with a blank. A real
+environment variable always wins over the file, so manual runs still work:
 
 ```bash
 WORK_WIKI_GRANOLA_API_KEY=... bash ~/work-wiki/.system/scripts/granola-ingest.sh --force
 ```
+
+**Slack token** (`WORK_WIKI_SLACK_TOKEN`): must call Slack Web API `auth.test`,
+`search.messages`, and `conversations.replies`. `search.messages` requires a
+**user** token (`xoxp-…`), not a bot token, with `search:read` + the relevant
+`*:history` scopes for the channels you want ingested.
+
+**Granola key** (`WORK_WIKI_GRANOLA_API_KEY`): a Granola Personal API key.
+
+**Rotating a key:** edit the one file (or re-run the installer with the new
+token) — no plist changes needed. The next scheduled run picks it up.
 
 ## First-time backfill
 
@@ -129,7 +163,9 @@ The backfill is idempotent — running it again refines rather than duplicates.
 | `WORK_WIKI_LARGE_TAIL_USER_MSGS` | `50` | Sessions whose new tail exceeds this user-msg count get a dedicated synth run |
 | `WORK_WIKI_LARGE_TAIL_BYTES` | `500000` | Sessions whose new tail exceeds this byte size get a dedicated synth run |
 | `WORK_WIKI_CODEX_IDLE_MINUTES` | `10` | Codex threads must be this idle before polling ingest enqueues them |
-| `WORK_WIKI_GRANOLA_API_KEY` | unset | Granola Personal API key for `granola-ingest.sh` |
+| `WORK_WIKI_SECRETS_FILE` | `~/.config/work-wiki/secrets.env` | Path to the 0600 credentials file the ingest jobs source |
+| `WORK_WIKI_SLACK_TOKEN` | unset | Slack user token (`xoxp-…`) for `slack-ingest.sh` — store in the secrets file, **not** settings.json |
+| `WORK_WIKI_GRANOLA_API_KEY` | unset | Granola Personal API key for `granola-ingest.sh` — store in the secrets file, **not** settings.json |
 | `WORK_WIKI_GRANOLA_LOOKBACK_HOURS` | `24` | First-run/default Granola updated-note window |
 | `WORK_WIKI_GRANOLA_OVERLAP_MINUTES` | `15` | Overlap applied to the last successful Granola cursor |
 | `WORK_WIKI_GRANOLA_PAGE_SIZE` | `30` | Granola list page size, clamped to API max 30 |

@@ -15,6 +15,7 @@ KEEP_GRANOLA_DAILY=0
 KEEP_REFACTOR_DAILY=0
 KEEP_CODEX_INGEST=0
 KEEP_SETTINGS_ENV=0
+KEEP_SECRETS=0
 for arg in "$@"; do
   case "${arg}" in
     -y|--yes) ASSUME_YES=1 ;;
@@ -24,9 +25,10 @@ for arg in "$@"; do
     --keep-refactor-daily|--keep-refactor-weekly) KEEP_REFACTOR_DAILY=1 ;;
     --keep-codex-ingest) KEEP_CODEX_INGEST=1 ;;
     --keep-settings-env) KEEP_SETTINGS_ENV=1 ;;
+    --keep-secrets) KEEP_SECRETS=1 ;;
     -h|--help)
       cat <<'EOF'
-Usage: uninstall.sh [-y|--yes] [--keep-daily] [--keep-slack-daily] [--keep-granola-daily] [--keep-refactor-daily] [--keep-codex-ingest] [--keep-settings-env]
+Usage: uninstall.sh [-y|--yes] [--keep-daily] [--keep-slack-daily] [--keep-granola-daily] [--keep-refactor-daily] [--keep-codex-ingest] [--keep-settings-env] [--keep-secrets]
   -y, --yes                  Skip the confirmation prompt
       --keep-daily           Don't touch the synthesizer daily launchd plist
       --keep-slack-daily     Don't touch the Slack-ingest daily launchd plist
@@ -35,6 +37,7 @@ Usage: uninstall.sh [-y|--yes] [--keep-daily] [--keep-slack-daily] [--keep-grano
                              (legacy --keep-refactor-weekly is still accepted)
       --keep-codex-ingest    Don't touch the Codex-ingest launchd plist
       --keep-settings-env    Don't strip env.WORK_WIKI_* from ~/.claude/settings.json
+      --keep-secrets         Don't delete the credentials secrets file
   -h, --help                 Show this help
 
 This removes only configuration and background processes. The wiki
@@ -55,6 +58,7 @@ HOOKS_DIR="${HOME}/.claude/hooks"
 SETTINGS="${HOME}/.claude/settings.json"
 CLAUDE_MD="${HOME}/.claude/CLAUDE.md"
 CODEX_CONFIG="${HOME}/.codex/config.toml"
+SECRETS_FILE="${WORK_WIKI_SECRETS_FILE:-${HOME}/.config/work-wiki/secrets.env}"
 
 NEW_MARKER="<!-- work-wiki -->"
 OLD_MARKER="<!-- work-tracker -->"
@@ -252,6 +256,16 @@ legacy_cleanup_status() {
 }
 
 # --- Print plan ---
+secrets_status() {
+  if [[ "${KEEP_SECRETS}" -eq 1 ]]; then
+    echo "kept (--keep-secrets)"
+  elif [[ -f "${SECRETS_FILE}" ]]; then
+    echo "will remove ${SECRETS_FILE}"
+  else
+    echo "absent"
+  fi
+}
+
 cat <<EOF
 Work-wiki uninstaller — planned actions
 
@@ -270,6 +284,7 @@ stays untouched.
     Granola daily plist      : $(granola_daily_status)
     Codex ingest plist       : $(codex_ingest_status)
     Refactor daily plist     : $(refactor_daily_status)
+    Credentials secrets file : $(secrets_status)
 
   Kept (no action):
     Wiki repo                : ${WORK_WIKI}
@@ -438,6 +453,14 @@ if [[ "${KEEP_REFACTOR_DAILY}" -ne 1 ]]; then
   if [[ -d "${REFACTOR_LOCK_DIR}" ]]; then
     rmdir "${REFACTOR_LOCK_DIR}" 2>/dev/null && echo "✓ Cleared stale refactor-review lock dir" || true
   fi
+fi
+
+# --- Credentials secrets file ---
+if [[ "${KEEP_SECRETS}" -ne 1 && -f "${SECRETS_FILE}" ]]; then
+  rm -f "${SECRETS_FILE}"
+  echo "✓ Removed ${SECRETS_FILE}"
+  # Clean up the parent dir if we left it empty.
+  rmdir "$(dirname "${SECRETS_FILE}")" 2>/dev/null || true
 fi
 
 echo ""

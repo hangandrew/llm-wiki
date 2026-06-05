@@ -11,6 +11,28 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_WIKI="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# Load credentials from the install-managed secrets file. launchd jobs don't
+# inherit an interactive shell, so this is how the key reaches the scheduled
+# run. Only fills variables that are currently empty — a real environment
+# variable (e.g. a manual `WORK_WIKI_GRANOLA_API_KEY=… ./granola-ingest.sh`) wins.
+load_secrets_file() {
+  local f="${WORK_WIKI_SECRETS_FILE:-${HOME}/.config/work-wiki/secrets.env}"
+  [[ -f "${f}" ]] || return 0
+  local line key val
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"   # left-trim
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    line="${line#export }"
+    [[ "${line}" != *=* ]] && continue
+    key="${line%%=*}"; key="${key//[[:space:]]/}"
+    val="${line#*=}"
+    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+    [[ -z "${!key:-}" ]] && export "${key}=${val}"
+  done < "${f}"
+}
+load_secrets_file
+
 TEMPLATE_FILE="${WORK_WIKI}/.system/prompts/wiki-update-granola.md"
 EXTRACTOR="${WORK_WIKI}/.system/scripts/granola-extract.py"
 RUNNER="${WORK_WIKI}/.system/scripts/headless-agent-run.sh"
