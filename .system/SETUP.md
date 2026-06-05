@@ -393,6 +393,30 @@ Prefetches recent Slack messages/threads into a temporary JSONL bundle, then inv
 
 Slack prefetch uses `WORK_WIKI_SLACK_TOKEN` (fallbacks: `SLACK_USER_TOKEN`, `SLACK_BOT_TOKEN`) and deletes the raw bundle on exit. Only the cursor is retained.
 
+## Keeping the tooling up to date
+
+This repo (`llm-wiki`) is the source of truth for the `.system/` installer and
+automation code. If you cloned it and filled in your own `wiki/` + `worklog/`,
+you can pull later tooling updates **without touching your private content**:
+
+```bash
+# one-time: point at the public template
+git remote add upstream git@github.com:hangandrew/llm-wiki.git
+
+# whenever you want the latest tooling:
+bash .system/scripts/sync-system.sh             # pull + commit .system/ updates
+bash .system/scripts/sync-system.sh --dry-run   # preview the .system/ changes only
+bash .system/scripts/sync-system.sh --no-commit # apply + stage, you commit
+```
+
+`sync-system.sh` only ever modifies files under `.system/` — your `wiki/` and
+`worklog/` are never touched, and the gitignored `.system/state/` (cursors,
+queue) is left alone. It pulls from `upstream/main` by default (override with
+`WORK_WIKI_UPSTREAM_REMOTE` / `WORK_WIKI_UPSTREAM_BRANCH`), aborts if any change
+outside `.system/` would be staged, and never pushes anything upstream — data
+flows into your instance only. Re-run `install.sh` after a sync if a launchd
+plist template or hook changed.
+
 ## Uninstall
 
 ```bash
